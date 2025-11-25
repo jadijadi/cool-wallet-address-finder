@@ -5,12 +5,9 @@ const fmt = std.fmt;
 const print = std.debug.print;
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-// EDIT This section to configure the search
-// -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-// Change this to what you are searching for
-const TARGET_PATTERN = "04ad10";
-// Change this to the number of threads you want to use; if 0, it will use all available CPUs
-var num_threads: usize = 10;
+// Usage: nice-wallets <pattern> [num_threads]
+// Example: nice-wallets 04ad10 10
+// If num_threads is 0 or not provided, all CPUs will be used
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
 // Full BIP39 English word list (2048 words)
@@ -374,6 +371,28 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Parse command line arguments
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    if (args.len < 2) {
+        print("Usage: {s} <pattern> [num_threads]\n", .{args[0]});
+        print("  pattern: The hex pattern to search for in wallet addresses (e.g., '04ad10')\n", .{});
+        print("  num_threads: Number of CPU cores to use (default: all available, use 0 for auto)\n", .{});
+        print("\nExample: {s} 04ad10 10\n", .{args[0]});
+        std.process.exit(1);
+    }
+
+    const target_pattern = args[1];
+
+    var num_threads: usize = 0;
+    if (args.len >= 3) {
+        num_threads = std.fmt.parseInt(usize, args[2], 10) catch {
+            print("Error: Invalid number of threads '{s}'. Must be a positive integer.\n", .{args[2]});
+            std.process.exit(1);
+        };
+    }
+
     // Load BIP39 word list
     const word_list = try loadBIP39Words(allocator);
     defer allocator.free(word_list);
@@ -385,21 +404,21 @@ pub fn main() !void {
     print("Searching for wallet ", .{});
     const search_pattern: []const u8 = blk: {
         if (SEARCH_IN_MNEMONIC) {
-            print("with mnemonic containing '{s}'...\n", .{TARGET_PATTERN});
-            break :blk TARGET_PATTERN;
+            print("with mnemonic containing '{s}'...\n", .{target_pattern});
+            break :blk target_pattern;
         } else {
-            if (!isValidHexPattern(TARGET_PATTERN)) {
-                print("⚠ Warning: '{s}' contains non-hex characters. Ethereum addresses are hex (0-9, a-f).\n", .{TARGET_PATTERN});
-                const converted = try toHexPattern(TARGET_PATTERN, allocator);
+            if (!isValidHexPattern(target_pattern)) {
+                print("⚠ Warning: '{s}' contains non-hex characters. Ethereum addresses are hex (0-9, a-f).\n", .{target_pattern});
+                const converted = try toHexPattern(target_pattern, allocator);
                 print("Converting to hex pattern: '{s}'...\n", .{converted});
                 break :blk converted;
             } else {
-                print("with address starting with '{s}'...\n", .{TARGET_PATTERN});
-                break :blk TARGET_PATTERN;
+                print("with address starting with '{s}'...\n", .{target_pattern});
+                break :blk target_pattern;
             }
         }
     };
-    defer if (!SEARCH_IN_MNEMONIC and !isValidHexPattern(TARGET_PATTERN)) {
+    defer if (!SEARCH_IN_MNEMONIC and !isValidHexPattern(target_pattern)) {
         allocator.free(search_pattern);
     };
 

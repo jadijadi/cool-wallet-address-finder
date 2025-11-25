@@ -30,24 +30,43 @@ A Zig program to generate cryptocurrency wallets (Ethereum addresses) with custo
 zig build
 ```
 
+Or build and run in one step:
+
+```bash
+zig build run -- <pattern> [num_threads]
+# Example: zig build run -- dead 8
+```
+
 ## Running
 
 ```bash
-zig build run
+# Usage: nice-wallets <pattern> [num_threads]
+./zig-out/bin/nice-wallets <pattern> [num_threads]
 ```
 
-Or after building:
+### Examples:
 
 ```bash
-./zig-out/bin/nice-wallets
+# Search for address starting with '04ad10' using all available CPUs
+./zig-out/bin/nice-wallets 04ad10
+
+# Search for address starting with 'dead' using 8 CPU cores
+./zig-out/bin/nice-wallets dead 8
+
+# Search for address starting with 'cafe' using 4 CPU cores
+./zig-out/bin/nice-wallets cafe 4
 ```
+
+### Arguments:
+
+- `pattern` (required): The hex pattern to search for in wallet addresses (e.g., '04ad10', 'dead', 'cafe')
+- `num_threads` (optional): Number of CPU cores to use. If omitted or set to 0, all available CPUs will be used.
 
 ## Customization
 
 Edit `src/main.zig` to change:
 
-- `TARGET_PATTERN`: The pattern to search for
-- `SEARCH_IN_MNEMONIC`: Set to `true` to search in mnemonic words instead of addresses
+- `SEARCH_IN_MNEMONIC`: Set to `true` to search in mnemonic words instead of addresses (default: `false`)
 
 ## How It Works
 
