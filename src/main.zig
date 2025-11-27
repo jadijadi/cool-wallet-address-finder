@@ -5,18 +5,14 @@ const fmt = std.fmt;
 const print = std.debug.print;
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-// Usage: nice-wallets <pattern> [num_threads]
-// Example: nice-wallets 04ad10 10
+// Usage: cool-wallet-address-finder <pattern> [num_threads]
+// Example: cool-wallet-address-finder 04ad10 10
 // If num_threads is 0 or not provided, all CPUs will be used
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
 // Full BIP39 English word list (2048 words)
 const BIP39_WORDS = @embedFile("bip39_words.txt");
-
-// Alternative: search for pattern in mnemonic words themselves
 const SEARCH_IN_MNEMONIC = false;
-
-// Result structure for passing found wallets between threads
 const FoundWallet = struct {
     mnemonic: [12][]const u8,
     address: [42]u8,
@@ -25,7 +21,6 @@ const FoundWallet = struct {
     elapsed: f64,
 };
 
-// Shared state for worker threads
 const SharedState = struct {
     found: std.atomic.Value(bool),
     total_attempts: std.atomic.Value(u64),

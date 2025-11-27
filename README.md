@@ -1,4 +1,4 @@
-# Nice Wallets - Vanity Address Generator
+# cool-wallet-address-finder
 
 A Zig program to generate cryptocurrency wallets (Ethereum addresses) with custom prefixes or patterns in mnemonics.
 
@@ -20,7 +20,7 @@ A Zig program to generate cryptocurrency wallets (Ethereum addresses) with custo
    - `dead`
    - `beef`
    - `cafe`
-   - `jadi` (if you map j→a, d→d, i→1, etc.)
+   - `4ad1` (if you map j→4 & i→1 its Jadi)
 
 2. **Search in mnemonics**: Set `SEARCH_IN_MNEMONIC = true` to find mnemonics containing "jadi" in the word list.
 
@@ -40,21 +40,20 @@ zig build run -- <pattern> [num_threads]
 ## Running
 
 ```bash
-# Usage: nice-wallets <pattern> [num_threads]
-./zig-out/bin/nice-wallets <pattern> [num_threads]
+./zig-out/bin/cool-wallet-address-finder <pattern> [num_threads]
 ```
 
 ### Examples:
 
 ```bash
 # Search for address starting with '04ad10' using all available CPUs
-./zig-out/bin/nice-wallets 04ad10
+./zig-out/bin/cool-wallet-address-finder 04ad10
 
 # Search for address starting with 'dead' using 8 CPU cores
-./zig-out/bin/nice-wallets dead 8
+./zig-out/bin/cool-wallet-address-finder dead 8
 
 # Search for address starting with 'cafe' using 4 CPU cores
-./zig-out/bin/nice-wallets cafe 4
+./zig-out/bin/cool-wallet-address-finder cafe 4
 ```
 
 ### Arguments:

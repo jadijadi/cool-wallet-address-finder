@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "nice-wallets",
+        .name = "cool-wallet-address-finder",
         .root_module = b.addModule("main", .{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
