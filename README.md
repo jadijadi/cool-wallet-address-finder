@@ -95,3 +95,12 @@ The time to find a matching address depends on:
 
 For a 4-character hex pattern, expect thousands to millions of attempts.
 
+## Restarting and Stopping
+
+You can safely stop the program and start it again at any time — there is no harm or risk of loss, as the search process is random and stateless. Each run is independent and does not build on previous progress.
+
+## About Progress Estimation
+
+The progress percentage displayed is only a general statistical estimate and does not guarantee results. It is possible to exceed 100% progress before finding a match, or to find a valid address on the very first attempt — the process is probabilistic, not deterministic.
+
+
