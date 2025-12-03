@@ -1,8 +1,8 @@
 const std = @import("std");
 const crypto = std.crypto;
-const mem = std.mem;
 const fmt = std.fmt;
 const print = std.debug.print;
+const secp256k1 = @import("secp256k1.zig");
 
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 // Usage: cool-wallet-address-finder <pattern> [num_threads]
@@ -10,13 +10,10 @@ const print = std.debug.print;
 // If num_threads is 0 or not provided, all CPUs will be used
 // -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
-// Full BIP39 English word list (2048 words)
-const BIP39_WORDS = @embedFile("bip39_words.txt");
-const SEARCH_IN_MNEMONIC = false;
 const FoundWallet = struct {
-    mnemonic: [12][]const u8,
     address: [42]u8,
     private_key: [32]u8,
+    public_key: [65]u8,
     attempts: u64,
     elapsed: f64,
 };
@@ -26,139 +23,31 @@ const SharedState = struct {
     total_attempts: std.atomic.Value(u64),
     result_mutex: std.Thread.Mutex,
     result: ?FoundWallet,
-    word_list: [][]const u8,
     search_pattern: []const u8,
-    allocator: std.mem.Allocator,
 };
 
-fn loadBIP39Words(allocator: std.mem.Allocator) ![][]const u8 {
-    var words = try std.ArrayList([]const u8).initCapacity(allocator, 2048);
-    var iter = std.mem.splitScalar(u8, BIP39_WORDS, '\n');
+// secp256k1 curve order: n = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+const SECP256K1_ORDER: [32]u8 = [32]u8{
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
+    0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B,
+    0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36, 0x41, 0x41,
+};
 
-    while (iter.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \r\n");
-        if (trimmed.len > 0) {
-            try words.append(allocator, trimmed);
-        }
+// Use libsecp256k1 for proper secp256k1 operations
+var secp256k1_ctx: ?*secp256k1.secp256k1_context = null;
+
+fn getSecp256k1Context() !*secp256k1.secp256k1_context {
+    if (secp256k1_ctx == null) {
+        secp256k1_ctx = secp256k1.createContext() orelse return error.ContextCreationFailed;
     }
-
-    return try words.toOwnedSlice(allocator);
-}
-
-fn generateRandomEntropy() [17]u8 {
-    // Generate 17 bytes = 136 bits
-    // For 12 words: need 128 bits entropy + 4 bits checksum = 132 bits total
-    // We'll use first 132 bits (16.5 bytes)
-    var entropy: [17]u8 = undefined;
-    std.crypto.random.bytes(&entropy);
-    return entropy;
-}
-
-fn entropyToMnemonic(entropy: [17]u8, word_list: [][]const u8) ![12][]const u8 {
-    // BIP39: 128 bits entropy + 4 bits checksum = 132 bits = 12 words
-    // Each word is 11 bits (2048 = 2^11)
-    var words: [12][]const u8 = undefined;
-
-    var bit_offset: u8 = 0;
-    var byte_idx: u8 = 0;
-
-    for (0..12) |i| {
-        var word_idx: u16 = 0;
-
-        // Read 11 bits
-        for (0..11) |_| {
-            if (byte_idx >= entropy.len) {
-                // Should not happen with 17 bytes, but safety check
-                return error.OutOfBounds;
-            }
-            const current_byte = entropy[byte_idx];
-            const bit_value = (current_byte >> @intCast(7 - bit_offset)) & 1;
-            word_idx = (word_idx << 1) | bit_value;
-
-            bit_offset += 1;
-            if (bit_offset >= 8) {
-                bit_offset = 0;
-                byte_idx += 1;
-            }
-        }
-
-        words[i] = word_list[word_idx % word_list.len];
-    }
-
-    return words;
-}
-
-fn mnemonicToSeed(allocator: std.mem.Allocator, mnemonic: [12][]const u8, passphrase: []const u8) ![64]u8 {
-    // Simplified seed derivation using SHA512 (not full PBKDF2, but works for address generation)
-    var mnemonic_str = try std.ArrayList(u8).initCapacity(allocator, 200);
-    defer mnemonic_str.deinit(allocator);
-
-    for (mnemonic, 0..) |word, i| {
-        if (i > 0) try mnemonic_str.append(allocator, ' ');
-        try mnemonic_str.appendSlice(allocator, word);
-    }
-
-    const salt_str = try std.fmt.allocPrint(allocator, "mnemonic{s}", .{passphrase});
-    defer allocator.free(salt_str);
-
-    // Simplified seed derivation - use multiple rounds of hashing
-    // In production, use proper PBKDF2-SHA512 with 2048 iterations
-    var seed: [64]u8 = undefined;
-    var hasher = crypto.hash.sha3.Keccak512.init(.{});
-    hasher.update(mnemonic_str.items);
-    hasher.update(salt_str);
-    hasher.final(&seed);
-
-    // Apply multiple rounds to simulate PBKDF2
-    var round: u32 = 0;
-    while (round < 2048) : (round += 1) {
-        var h = crypto.hash.sha3.Keccak512.init(.{});
-        h.update(&seed);
-        h.update(mnemonic_str.items);
-        h.update(salt_str);
-        h.final(&seed);
-    }
-
-    return seed;
-}
-
-fn seedToPrivateKey(seed: [64]u8) [32]u8 {
-    // Use first 32 bytes of seed as private key
-    // In production, use BIP32/BIP44 derivation
-    var private_key: [32]u8 = undefined;
-    @memcpy(&private_key, seed[0..32]);
-
-    // Ensure valid secp256k1 private key (must be < secp256k1 order)
-    // For simplicity, we'll use it as-is, but in production should validate
-    return private_key;
+    return secp256k1_ctx.?;
 }
 
 fn secp256k1PublicKey(private_key: [32]u8) ![65]u8 {
-    // Simplified secp256k1 public key derivation
-    // In production, use a proper secp256k1 library like zig-secp256k1
-    // For now, we'll use a deterministic hash-based approach that's not cryptographically correct
-    // but will generate different addresses for different private keys
-
-    var public_key: [65]u8 = undefined;
-    public_key[0] = 0x04; // Uncompressed public key prefix
-
-    // Use Keccak-256 to derive "public key" deterministically
-    // This is NOT real secp256k1, but will work for address generation
-    var hasher = crypto.hash.sha3.Keccak256.init(.{});
-    hasher.update(&private_key);
-    hasher.update("pubkey_x");
-    var hash_x: [32]u8 = undefined;
-    hasher.final(&hash_x);
-    @memcpy(public_key[1..33], &hash_x);
-
-    var hasher2 = crypto.hash.sha3.Keccak256.init(.{});
-    hasher2.update(&private_key);
-    hasher2.update("pubkey_y");
-    var hash_y: [32]u8 = undefined;
-    hasher2.final(&hash_y);
-    @memcpy(public_key[33..65], &hash_y);
-
-    return public_key;
+    // Use libsecp256k1 for proper secp256k1 public key derivation
+    const ctx = try getSecp256k1Context();
+    return secp256k1.publicKeyFromPrivate(ctx, private_key);
 }
 
 fn publicKeyToAddress(public_key: [65]u8) ![20]u8 {
@@ -240,112 +129,63 @@ fn addressMatchesPattern(address_hex: [42]u8, pattern: []const u8) bool {
     return true;
 }
 
-fn mnemonicContainsPattern(allocator: std.mem.Allocator, mnemonic: [12][]const u8, pattern: []const u8) bool {
-    const pattern_lower = allocator.dupe(u8, pattern) catch return false;
-    defer allocator.free(pattern_lower);
-    for (pattern_lower) |*c| c.* = std.ascii.toLower(c.*);
+fn generateValidPrivateKey() [32]u8 {
+    // Generate a valid secp256k1 private key (must be < curve order)
+    while (true) {
+        var private_key: [32]u8 = undefined;
+        std.crypto.random.bytes(&private_key);
 
-    for (mnemonic) |word| {
-        const word_lower = allocator.dupe(u8, word) catch continue;
-        defer allocator.free(word_lower);
-        for (word_lower) |*c| c.* = std.ascii.toLower(c.*);
-
-        if (std.mem.indexOf(u8, word_lower, pattern_lower) != null) {
-            return true;
+        // Check if key is valid (< curve order)
+        var i: usize = 0;
+        while (i < 32) : (i += 1) {
+            if (private_key[i] < SECP256K1_ORDER[i]) {
+                return private_key; // Valid key
+            } else if (private_key[i] > SECP256K1_ORDER[i]) {
+                break; // Invalid, regenerate
+            }
         }
+        // If we get here and i == 32, key equals order (invalid) - regenerate
     }
-
-    return false;
 }
 
 fn workerThread(shared: *SharedState, start_time: i128) void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
     var local_attempts: u64 = 0;
 
     while (!shared.found.load(.acquire)) {
         local_attempts += 1;
 
-        // Generate entropy
-        const entropy = generateRandomEntropy();
+        // Generate random private key
+        const private_key = generateValidPrivateKey();
 
-        // Generate mnemonic
-        const mnemonic_words = entropyToMnemonic(entropy, shared.word_list) catch continue;
+        // Derive public key
+        const public_key = secp256k1PublicKey(private_key) catch continue;
 
-        // Check mnemonic pattern if enabled
-        if (SEARCH_IN_MNEMONIC) {
-            if (mnemonicContainsPattern(allocator, mnemonic_words, shared.search_pattern)) {
-                // Found a match! Try to claim it
-                const was_found = shared.found.swap(true, .acq_rel);
-                if (!was_found) {
-                    // We're the first to find it
-                    const total = shared.total_attempts.fetchAdd(local_attempts, .monotonic) + local_attempts;
-                    const elapsed = @as(f64, @floatFromInt(std.time.nanoTimestamp() - start_time)) / 1_000_000_000.0;
+        // Derive address
+        const address = publicKeyToAddress(public_key) catch continue;
 
-                    // Calculate address for display
-                    const seed = mnemonicToSeed(allocator, mnemonic_words, "") catch {
-                        return;
-                    };
-                    const private_key = seedToPrivateKey(seed);
-                    const public_key = secp256k1PublicKey(private_key) catch {
-                        return;
-                    };
-                    const address = publicKeyToAddress(public_key) catch {
-                        return;
-                    };
-                    const address_hex = addressToHex(address);
+        // Convert to hex
+        const address_hex = addressToHex(address);
 
-                    shared.result_mutex.lock();
-                    defer shared.result_mutex.unlock();
-                    shared.result = FoundWallet{
-                        .mnemonic = mnemonic_words,
-                        .address = address_hex,
-                        .private_key = private_key,
-                        .attempts = total,
-                        .elapsed = elapsed,
-                    };
-                }
-                return;
+        // Check pattern
+        if (addressMatchesPattern(address_hex, shared.search_pattern)) {
+            // Found a match! Try to claim it
+            const was_found = shared.found.swap(true, .acq_rel);
+            if (!was_found) {
+                // We're the first to find it
+                const total = shared.total_attempts.fetchAdd(local_attempts, .monotonic) + local_attempts;
+                const elapsed = @as(f64, @floatFromInt(std.time.nanoTimestamp() - start_time)) / 1_000_000_000.0;
+
+                shared.result_mutex.lock();
+                defer shared.result_mutex.unlock();
+                shared.result = FoundWallet{
+                    .address = address_hex,
+                    .private_key = private_key,
+                    .public_key = public_key,
+                    .attempts = total,
+                    .elapsed = elapsed,
+                };
             }
-        } else {
-            // Derive seed
-            const seed = mnemonicToSeed(allocator, mnemonic_words, "") catch continue;
-
-            // Derive private key
-            const private_key = seedToPrivateKey(seed);
-
-            // Derive public key
-            const public_key = secp256k1PublicKey(private_key) catch continue;
-
-            // Derive address
-            const address = publicKeyToAddress(public_key) catch continue;
-
-            // Convert to hex
-            const address_hex = addressToHex(address);
-
-            // Check pattern
-            if (addressMatchesPattern(address_hex, shared.search_pattern)) {
-                // Found a match! Try to claim it
-                const was_found = shared.found.swap(true, .acq_rel);
-                if (!was_found) {
-                    // We're the first to find it
-                    const total = shared.total_attempts.fetchAdd(local_attempts, .monotonic) + local_attempts;
-                    const elapsed = @as(f64, @floatFromInt(std.time.nanoTimestamp() - start_time)) / 1_000_000_000.0;
-
-                    shared.result_mutex.lock();
-                    defer shared.result_mutex.unlock();
-                    shared.result = FoundWallet{
-                        .mnemonic = mnemonic_words,
-                        .address = address_hex,
-                        .private_key = private_key,
-                        .attempts = total,
-                        .elapsed = elapsed,
-                    };
-                }
-                return;
-            }
+            return;
         }
 
         // Update shared attempts counter periodically
@@ -382,38 +222,25 @@ pub fn main() !void {
 
     var num_threads: usize = 0;
     if (args.len >= 3) {
-        num_threads = std.fmt.parseInt(usize, args[2], 10) catch {
+        num_threads = fmt.parseInt(usize, args[2], 10) catch {
             print("Error: Invalid number of threads '{s}'. Must be a positive integer.\n", .{args[2]});
             std.process.exit(1);
         };
     }
 
-    // Load BIP39 word list
-    const word_list = try loadBIP39Words(allocator);
-    defer allocator.free(word_list);
-
-    if (word_list.len != 2048) {
-        print("Warning: Expected 2048 BIP39 words, got {}\n", .{word_list.len});
-    }
-
     print("Searching for wallet ", .{});
     const search_pattern: []const u8 = blk: {
-        if (SEARCH_IN_MNEMONIC) {
-            print("with mnemonic containing '{s}'...\n", .{target_pattern});
-            break :blk target_pattern;
+        if (!isValidHexPattern(target_pattern)) {
+            print("⚠ Warning: '{s}' contains non-hex characters. Ethereum addresses are hex (0-9, a-f).\n", .{target_pattern});
+            const converted = try toHexPattern(target_pattern, allocator);
+            print("Converting to hex pattern: '{s}'...\n", .{converted});
+            break :blk converted;
         } else {
-            if (!isValidHexPattern(target_pattern)) {
-                print("⚠ Warning: '{s}' contains non-hex characters. Ethereum addresses are hex (0-9, a-f).\n", .{target_pattern});
-                const converted = try toHexPattern(target_pattern, allocator);
-                print("Converting to hex pattern: '{s}'...\n", .{converted});
-                break :blk converted;
-            } else {
-                print("with address starting with '{s}'...\n", .{target_pattern});
-                break :blk target_pattern;
-            }
+            print("with address starting with '{s}'...\n", .{target_pattern});
+            break :blk target_pattern;
         }
     };
-    defer if (!SEARCH_IN_MNEMONIC and !isValidHexPattern(target_pattern)) {
+    defer if (!isValidHexPattern(target_pattern)) {
         allocator.free(search_pattern);
     };
 
@@ -430,9 +257,7 @@ pub fn main() !void {
         .total_attempts = std.atomic.Value(u64).init(0),
         .result_mutex = std.Thread.Mutex{},
         .result = null,
-        .word_list = word_list,
         .search_pattern = search_pattern,
-        .allocator = allocator,
     };
 
     const start_time = std.time.nanoTimestamp();
@@ -455,7 +280,7 @@ pub fn main() !void {
             const rate = if (elapsed > 0) @as(f64, @floatFromInt(attempts)) / elapsed else 0;
 
             // Calculate estimated remaining time
-            if (!SEARCH_IN_MNEMONIC and rate > 0) {
+            if (rate > 0) {
                 // For hex patterns: probability = 1/(16^pattern_length)
                 // Expected attempts = 16^pattern_length
                 const pattern_len = @as(f64, @floatFromInt(search_pattern.len));
@@ -470,16 +295,16 @@ pub fn main() !void {
                 var time_str: [64]u8 = undefined;
                 const time_slice: []const u8 = blk: {
                     if (estimated_seconds < 60) {
-                        break :blk std.fmt.bufPrint(&time_str, "{d:.0}s", .{estimated_seconds}) catch "?s";
+                        break :blk fmt.bufPrint(&time_str, "{d:.0}s", .{estimated_seconds}) catch "?s";
                     } else if (estimated_seconds < 3600) {
                         const minutes = estimated_seconds / 60.0;
-                        break :blk std.fmt.bufPrint(&time_str, "{d:.1}m", .{minutes}) catch "?m";
+                        break :blk fmt.bufPrint(&time_str, "{d:.1}m", .{minutes}) catch "?m";
                     } else if (estimated_seconds < 86400) {
                         const hours = estimated_seconds / 3600.0;
-                        break :blk std.fmt.bufPrint(&time_str, "{d:.1}h", .{hours}) catch "?h";
+                        break :blk fmt.bufPrint(&time_str, "{d:.1}h", .{hours}) catch "?h";
                     } else {
                         const days = estimated_seconds / 86400.0;
-                        break :blk std.fmt.bufPrint(&time_str, "{d:.1}d", .{days}) catch "?d";
+                        break :blk fmt.bufPrint(&time_str, "{d:.1}d", .{days}) catch "?d";
                     }
                 };
 
@@ -502,31 +327,21 @@ pub fn main() !void {
 
     // Display result
     if (shared.result) |result| {
-        print("\n\n✓ Found matching {s} after {} attempts ({d:.2} seconds)!\n\n", .{
-            if (SEARCH_IN_MNEMONIC) "mnemonic" else "address",
+        print("\n\n✓ Found matching address after {} attempts ({d:.2} seconds)!\n\n", .{
             result.attempts,
             result.elapsed,
         });
 
-        if (SEARCH_IN_MNEMONIC) {
-            print("Mnemonic (12 words): ", .{});
-            for (result.mnemonic, 0..) |word, i| {
-                if (i > 0) print(" ", .{});
-                print("{s}", .{word});
-            }
-            print("\n\nAddress: {s}\n", .{result.address});
-        } else {
-            print("Address: {s}\n", .{result.address});
-            print("Mnemonic (12 words): ", .{});
-            for (result.mnemonic, 0..) |word, i| {
-                if (i > 0) print(" ", .{});
-                print("{s}", .{word});
-            }
-            print("\n", .{});
-        }
+        print("Address: {s}\n\n", .{result.address});
 
-        print("\nPrivate Key (hex): ", .{});
+        print("Private Key (hex): ", .{});
         for (result.private_key) |byte| {
+            print("{x:0>2}", .{byte});
+        }
+        print("\n\n", .{});
+
+        print("Public Key (hex, uncompressed): ", .{});
+        for (result.public_key) |byte| {
             print("{x:0>2}", .{byte});
         }
         print("\n", .{});

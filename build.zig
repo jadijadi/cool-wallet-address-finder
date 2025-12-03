@@ -13,6 +13,11 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Link against libsecp256k1
+    exe.linkSystemLibrary("secp256k1");
+    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/secp256k1/include" });
+    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/secp256k1/lib" });
+
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

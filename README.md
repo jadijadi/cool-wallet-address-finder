@@ -1,28 +1,57 @@
 # cool-wallet-address-finder
 
-A Zig program to generate cryptocurrency wallets (Ethereum addresses) with custom prefixes or patterns in mnemonics.
+A Zig program to generate EVM wallet addresses with custom hex patterns by brute-forcing private keys.
 
 ## Features
 
-- Generates BIP39 mnemonic phrases (12 words)
-- Derives Ethereum addresses from mnemonics
-- Searches for addresses matching a specific pattern
-- Optionally searches for patterns in mnemonic words themselves
-- Shows progress and generation rate
+- Generates random valid secp256k1 private keys
+- Derives Ethereum addresses from private keys
+- Searches for addresses matching a specific hex pattern
+- Multi-threaded for fast parallel searching
+- Shows progress, generation rate, and estimated time remaining
+
+## Prerequisites
+
+This program requires `libsecp256k1` to be installed on your system since I failed to write it in Zig and rolled back to using C bindings.
+
+### Installing libsecp256k1
+
+**macOS (Homebrew):**
+```bash
+brew install secp256k1
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt-get install libsecp256k1-dev
+```
+
+**Linux (Fedora/RHEL):**
+```bash
+sudo dnf install secp256k1-devel
+```
+
+**From source:**
+```bash
+git clone https://github.com/bitcoin-core/secp256k1.git
+cd secp256k1
+./autogen.sh
+./configure
+make
+sudo make install
+```
+
+**Note:** If you install from source or use a non-standard location, you may need to update the include and library paths in `build.zig`.
 
 ## Important Note
 
 **Ethereum addresses are hexadecimal** (characters 0-9 and a-f). The pattern "jadi" contains 'j' which is not a valid hex character, so searching for addresses starting with "jadi" will never find a match.
 
-### Options:
-
-1. **Search for hex patterns**: Use valid hex patterns like:
-   - `dead`
-   - `beef`
-   - `cafe`
-   - `4ad1` (if you map j→4 & i→1 its Jadi)
-
-2. **Search in mnemonics**: Set `SEARCH_IN_MNEMONIC = true` to find mnemonics containing "jadi" in the word list.
+The program will automatically convert non-hex characters to hex equivalents (e.g., 'j' → 'a', 'i' → '1') with a warning, but for best results, use valid hex patterns like:
+- `dead`
+- `beef`
+- `cafe`
+- `4ad1` (if you map j→4 & i→1 it's Jadi)
 
 ## Building
 
@@ -61,39 +90,26 @@ zig build run -- <pattern> [num_threads]
 - `pattern` (required): The hex pattern to search for in wallet addresses (e.g., '04ad10', 'dead', 'cafe')
 - `num_threads` (optional): Number of CPU cores to use. If omitted or set to 0, all available CPUs will be used.
 
-## Customization
-
-Edit `src/main.zig` to change:
-
-- `SEARCH_IN_MNEMONIC`: Set to `true` to search in mnemonic words instead of addresses (default: `false`)
-
 ## How It Works
 
-1. Generates random 128-bit entropy
-2. Converts entropy to 12-word BIP39 mnemonic
-3. Derives seed from mnemonic using hash-based derivation
-4. Derives private key from seed
-5. Derives public key using secp256k1 (simplified implementation)
-6. Computes Ethereum address using Keccak-256
-7. Checks if address matches the target pattern
-8. Repeats until a match is found
+1. Generates random 32-byte private keys that are valid for secp256k1 (less than curve order)
+2. Derives public key from private key using libsecp256k1
+3. Computes Ethereum address using Keccak-256 hash of the public key
+4. Checks if address matches the target pattern
+5. Repeats until a match is found
+
+## Output
+
+When a matching address is found, the program outputs:
+- **Address**: The Ethereum address in hex format (0x...)
+- **Private Key**: The private key in hex format (can be imported into MetaMask or other wallets)
+- **Public Key**: The uncompressed public key in hex format
 
 ## Security Note
 
-This implementation uses simplified cryptographic functions for demonstration. For production use:
-- Use a proper secp256k1 library
-- Use proper PBKDF2-SHA512 for seed derivation
-- Use proper BIP32/BIP44 key derivation
-- Validate private keys are within secp256k1 curve order
+This implementation uses the production-grade `libsecp256k1` library for cryptographic operations. The generated private keys are cryptographically secure random values that are validated to be within the secp256k1 curve order.
 
-## Performance
-
-The time to find a matching address depends on:
-- Pattern length (each additional character multiplies search time by ~16)
-- Pattern complexity
-- CPU performance
-
-For a 4-character hex pattern, expect thousands to millions of attempts.
+**Important:** Keep your private keys secure. Anyone with access to a private key has full control over the associated wallet.
 
 ## Restarting and Stopping
 
@@ -102,5 +118,3 @@ You can safely stop the program and start it again at any time — there is no h
 ## About Progress Estimation
 
 The progress percentage displayed is only a general statistical estimate and does not guarantee results. It is possible to exceed 100% progress before finding a match, or to find a valid address on the very first attempt — the process is probabilistic, not deterministic.
-
-
